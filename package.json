@@ -1,0 +1,42 @@
+{
+  "name": "pi-omniroute-model-trace",
+  "version": "0.1.0",
+  "description": "Show the real downstream model behind OmniRoute combos in the Pi footer.",
+  "license": "MIT",
+  "author": "Sanyam Jain",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xerosanyam/pi-omniroute-model-trace.git"
+  },
+  "homepage": "https://github.com/xerosanyam/pi-omniroute-model-trace#readme",
+  "bugs": {
+    "url": "https://github.com/xerosanyam/pi-omniroute-model-trace/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-coding-agent",
+    "omniroute",
+    "llm",
+    "gateway",
+    "model-trace",
+    "routing"
+  ],
+  "files": [
+    "extensions",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
