@@ -1,25 +1,34 @@
 /**
  * OmniRoute Model Trace — Pi extension
  *
- * OmniRoute combos (e.g. `fusion_free`) are not models. Each request is routed
- * to a real upstream model, which OmniRoute reports in the `x-omniroute-model`
- * response header. This extension captures that header via
- * `after_provider_response` and shows the real model in the footer:
+ * OmniRoute combos (e.g. `auto/claude-sonnet`) are not models. Each request is
+ * routed to a real upstream model. This extension shows the real model in the
+ * footer as soon as the first real token arrives:
  *
- *   while streaming:  fusion_free … → gpt-4o (updated as first token arrives)
- *   when done:        fusion_free → gpt-4o
+ *   at request start:  auto/claude-sonnet …
+ *   after first token: auto/claude-sonnet → claude-opus-4-7
  *
- * Fallbacks when neither header nor SSE model is available:
- *   - Pi's recorded `responseModel` (also real when OmniRoute reports it)
- *   - "(gateway fallback)" when OmniRoute only reports the generic "omniroute"
+ * Sources (in priority order):
+ *   1. SSE tee — clones each OmniRoute stream via a patched `globalThis.fetch`
+ *      and reads the real model straight from `data: {..."model":...}` chunks.
+ *      Necessary because pi-ai's `output.responseModel ||= chunk.model` latches
+ *      on OmniRoute's leading keepalive chunk (model="omniroute") and never
+ *      updates when the real model arrives in later chunks.
+ *   2. `after_provider_response` header `x-omniroute-model` — present on
+ *      non-streaming responses.
+ *   3. Pi's `message.responseModel` — works only when pi-ai captured a real
+ *      model (i.e. no keepalive chunk preceded it).
+ *   4. "(gateway fallback)" — shown only if OmniRoute itself never reveals
+ *      a real model.
+ *
+ * The fetch tee is scoped: it activates only for text/event-stream responses
+ * that carry `x-omniroute-route-class`, so non-OmniRoute traffic is untouched.
  *
  * Command:
  *   /omni-model    — Show the real model that answered the last OmniRoute reply
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import * as fs from "node:fs";
-const DBG = (x: any) => { try { fs.appendFileSync("/tmp/omni-live-debug.log", JSON.stringify(x) + "\n"); } catch {} };
 
 
 const STATUS_ID = "omni-model";
@@ -78,7 +87,6 @@ function installFetchTee() {
 								const m = obj?.model;
 								if (typeof m === "string" && m && !GATEWAY_LABELS.has(m)) {
 									sseModelQueue.push(m);
-									DBG({ ev: "sse_model", model: m });
 									reader.cancel().catch(() => {});
 									return;
 								}
@@ -88,8 +96,7 @@ function installFetchTee() {
 				} catch {}
 			})();
 			return new Response(a, { status: res.status, statusText: res.statusText, headers: res.headers });
-		} catch (e) {
-			DBG({ ev: "tee_err", err: String(e) });
+		} catch {
 			return res;
 		}
 	};
@@ -105,7 +112,6 @@ export default function (pi: ExtensionAPI) {
 		if (typeof real === "string" && real.trim()) {
 			headerQueue.push(real.trim());
 		}
-		DBG({ ev: "apr", header: real ?? null, keys: Object.keys(event.headers ?? {}).filter(k => k.includes("omni")) });
 	});
 
 	// While an OmniRoute reply is streaming, show what Pi selected.
@@ -115,7 +121,6 @@ export default function (pi: ExtensionAPI) {
 		snapshot = headerQueue.length;
 		sseSnapshot = sseModelQueue.length;
 		processedMessages.delete(m.id);
-		DBG({ ev: "start", model: m.model, snapshot, sseSnapshot, messageId: m.id });
 		ctx.ui.setStatus(STATUS_ID, `${m.model ?? ""} …`);
 
 		// Poll the sse queue: label the footer as soon as the first real model shows up.
@@ -132,7 +137,6 @@ export default function (pi: ExtensionAPI) {
 					const combo = m.model ?? "";
 					lastLabel = `${combo} → ${real}`;
 					ctx.ui.setStatus(STATUS_ID, lastLabel);
-					DBG({ ev: "sse_update", model: m.model, real, label: lastLabel, messageId: m.id });
 					clearInterval(timer);
 				}
 			}
@@ -147,25 +151,12 @@ export default function (pi: ExtensionAPI) {
 		// Already found model for this message? Skip.
 		if (processedMessages.has(m.id)) return;
 		const chunkModel = m.responseModel;
-		
-		// Log for debugging
-		DBG({
-			ev: "update_check",
-			messageId: m.id,
-			model: m.model,
-			responseModel: m.responseModel,
-			partialModel: chunkModel,
-			eventType: event.assistantMessageEvent?.type,
-			processed: processedMessages.has(m.id),
-			computedReal: "" // Will be set below
-		});
 
 		if (chunkModel && chunkModel.trim() && !GATEWAY_LABELS.has(chunkModel) && chunkModel !== m.model) {
 			processedMessages.add(m.id);
 			const combo = m.model ?? "";
 			lastLabel = `${combo} → ${chunkModel}`;
 			ctx.ui.setStatus(STATUS_ID, lastLabel);
-			DBG({ ev: "update", model: m.model, chunkModel, label: lastLabel, messageId: m.id });
 		}
 	});
 
@@ -174,10 +165,10 @@ export default function (pi: ExtensionAPI) {
 		const m = event.message;
 		if (m?.role !== "assistant" || m?.provider !== "omni") return;
 
-		// Don't overwrite if we already have a better label from message_update
+		// Don't overwrite if we already have a better label from message_update / SSE tee
 		if (processedMessages.has(m.id)) {
 			snapshot = -1;
-			DBG({ ev: "end_cached", model: m.model, responseModel: m.responseModel, label: lastLabel, messageId: m.id });
+			sseSnapshot = -1;
 			return;
 		}
 
@@ -195,7 +186,6 @@ export default function (pi: ExtensionAPI) {
 		} else {
 			real = m.responseModel ?? "";
 		}
-		DBG({ ev: "end", model: m.model, responseModel: m.responseModel, queue: [...headerQueue], sseQueue: [...sseModelQueue], snapshot, sseSnapshot, computedReal: real, messageId: m.id });
 		snapshot = -1;
 		sseSnapshot = -1;
 

@@ -1,6 +1,6 @@
 {
   "name": "pi-omniroute-model-trace",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Show the real downstream model behind OmniRoute combos in the Pi footer.",
   "license": "MIT",
   "author": "Sanyam Jain",
