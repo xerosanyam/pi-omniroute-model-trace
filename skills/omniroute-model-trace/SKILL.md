@@ -7,17 +7,21 @@ compatibility: Requires the pi-omniroute-model-trace extension installed, with P
 
 # OmniRoute Model Trace
 
-When Pi talks through an OmniRoute combo (e.g. `fusion_free`), the message's `model` field holds the combo id, while the actual upstream model is recorded separately as `responseModel`.
+When Pi talks through an OmniRoute combo (e.g. `fusion_free`), the message's `model` field holds the combo id, while the actual upstream model is reported by the gateway in the `x-omniroute-model` response header. The extension captures that header via `after_provider_response`; `responseModel` on the message is only a fallback (OmniRoute sometimes labels it generically as `omniroute`).
 
 ## See the live model
 
 After installing the extension and restarting Pi, each reply leaves a footer chip `omni-model`:
 
 - while streaming: `fusion_free …`
-- when done: `fusion_free → deepseek-v4-flash`
-- gateway fallback: `fusion_free → (gateway fallback)` — OmniRoute answered without reporting a concrete upstream model
+- when done: `fusion_free → deepseek-v4-flash-free` (from the `x-omniroute-model` header)
+- gateway fallback (only if the header was missing): `fusion_free → (gateway fallback)`
 
 `/omni-model` prints the same value as a notification.
+
+## How it gets the real model
+
+The extension listens to Pi's `after_provider_response` hook and reads the `x-omniroute-model` response header — the authoritative resolved model, present even when the body only says `omniroute`. `responseModel` on the message is used only as a fallback.
 
 ## Manual check (no extension)
 

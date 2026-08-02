@@ -8,12 +8,12 @@ OmniRoute combos like `fusion_free` are not models — each request is routed to
 
 ## The fix
 
-OmniRoute already reports the resolved model in the response, and Pi records it per message as `responseModel`. This extension surfaces it:
+OmniRoute reports the resolved upstream model in the `x-omniroute-model` response header. This extension captures it (via Pi's `after_provider_response` hook) and surfaces it in the footer — no dependence on the `responseModel` field, which sometimes only carries the generic "omniroute" label:
 
 ```text
 while streaming:  fusion_free …
 when done:        fusion_free → deepseek-v4-flash
-gateway fallback: fusion_free → (gateway fallback)
+gateway fallback (header missing + responseModel is "omniroute"): fusion_free → (gateway fallback)
 ```
 
 ## Install
@@ -34,7 +34,7 @@ The footer chip `omni-model` updates automatically after every OmniRoute reply. 
 /omni-model
 ```
 
-The package also ships a skill (`omniroute-model-trace`) that teaches the agent how to read `responseModel` from session files and interpret gateway fallback labels.
+The package also ships a skill (`omniroute-model-trace`) that teaches the agent how the header is captured and how to read `responseModel` from session files when debugging.
 
 ## Requirements
 
