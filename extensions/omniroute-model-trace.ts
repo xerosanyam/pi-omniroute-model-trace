@@ -27,14 +27,77 @@ const GATEWAY_LABELS = new Set(["omniroute"]);
 
 // Real models seen in `x-omniroute-model` headers, in arrival order.
 let headerQueue: string[] = [];
-// Queue length at the last omni message_start — pairs each header with the
-// message that triggered it even when requests are in flight.
+// Real models parsed from streaming SSE bodies, in arrival order.
+let sseModelQueue: string[] = [];
+// Queue length at the last omni message_start — pairs each header/model with
+// the message that triggered it even when requests are in flight.
 let snapshot = -1;
+let sseSnapshot = -1;
 let lastLabel = "";
 // Track which messages we've already found the model for (avoid duplicates)
 let processedMessages = new Set<string>();
 
+// Install a fetch tee ONCE per process. pi-ai's `output.responseModel ||= chunk.model`
+// latches on OmniRoute's keepalive chunk (model="omniroute"), so we sniff the
+// real model straight out of the SSE stream on the way through.
+let fetchPatched = false;
+function installFetchTee() {
+	if (fetchPatched) return;
+	fetchPatched = true;
+	const origFetch = globalThis.fetch;
+	globalThis.fetch = async function patchedFetch(input: any, init?: any): Promise<Response> {
+		const url = typeof input === "string" ? input : (input?.url ?? "");
+		const res = await origFetch(input, init);
+		try {
+			if (!url.includes("/chat/completions") || !res.body) return res;
+			const ct = res.headers.get("content-type") || "";
+			if (!ct.includes("text/event-stream")) return res;
+			// OmniRoute streaming detection: only tee if this looks like OmniRoute
+			if (res.headers.get("x-omniroute-route-class") === null) return res;
+
+			const [a, b] = res.body.tee();
+			// Consume `b` in the background to sniff the first real model.
+			(async () => {
+				const reader = b.getReader();
+				const decoder = new TextDecoder();
+				let buf = "";
+				try {
+					while (true) {
+						const { done, value } = await reader.read();
+						if (done) break;
+						buf += decoder.decode(value, { stream: true });
+						let idx;
+						while ((idx = buf.indexOf("\n")) !== -1) {
+							const line = buf.slice(0, idx).trim();
+							buf = buf.slice(idx + 1);
+							if (!line.startsWith("data:")) continue;
+							const payload = line.slice(5).trim();
+							if (!payload || payload === "[DONE]") continue;
+							try {
+								const obj = JSON.parse(payload);
+								const m = obj?.model;
+								if (typeof m === "string" && m && !GATEWAY_LABELS.has(m)) {
+									sseModelQueue.push(m);
+									DBG({ ev: "sse_model", model: m });
+									reader.cancel().catch(() => {});
+									return;
+								}
+							} catch {}
+						}
+					}
+				} catch {}
+			})();
+			return new Response(a, { status: res.status, statusText: res.statusText, headers: res.headers });
+		} catch (e) {
+			DBG({ ev: "tee_err", err: String(e) });
+			return res;
+		}
+	};
+}
+
 export default function (pi: ExtensionAPI) {
+	installFetchTee();
+
 	// OmniRoute always reports the resolved upstream model in this header.
 	// This is reliable for non-streaming and some streaming responses.
 	pi.on("after_provider_response", (event: any) => {
@@ -50,9 +113,30 @@ export default function (pi: ExtensionAPI) {
 		const m = event.message;
 		if (m?.role !== "assistant" || m?.provider !== "omni") return;
 		snapshot = headerQueue.length;
+		sseSnapshot = sseModelQueue.length;
 		processedMessages.delete(m.id);
-		DBG({ ev: "start", model: m.model, snapshot, messageId: m.id });
+		DBG({ ev: "start", model: m.model, snapshot, sseSnapshot, messageId: m.id });
 		ctx.ui.setStatus(STATUS_ID, `${m.model ?? ""} …`);
+
+		// Poll the sse queue: label the footer as soon as the first real model shows up.
+		const pollStart = Date.now();
+		const timer = setInterval(() => {
+			if (processedMessages.has(m.id) || Date.now() - pollStart > 30000) {
+				clearInterval(timer);
+				return;
+			}
+			if (sseModelQueue.length > sseSnapshot) {
+				const real = sseModelQueue[sseSnapshot];
+				if (real && !GATEWAY_LABELS.has(real) && real !== m.model) {
+					processedMessages.add(m.id);
+					const combo = m.model ?? "";
+					lastLabel = `${combo} → ${real}`;
+					ctx.ui.setStatus(STATUS_ID, lastLabel);
+					DBG({ ev: "sse_update", model: m.model, real, label: lastLabel, messageId: m.id });
+					clearInterval(timer);
+				}
+			}
+		}, 50);
 	});
 
 	// Process each chunk as it arrives. The first chunk contains the real model.
@@ -98,7 +182,11 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		let real = "";
-		if (snapshot >= 0 && headerQueue.length > snapshot) {
+		// Prefer SSE-sniffed model (works for streaming even when the header is absent).
+		if (sseSnapshot >= 0 && sseModelQueue.length > sseSnapshot) {
+			real = sseModelQueue[sseSnapshot];
+			sseModelQueue = sseModelQueue.slice(sseSnapshot + 1);
+		} else if (snapshot >= 0 && headerQueue.length > snapshot) {
 			// Header that arrived while THIS message was in flight.
 			real = headerQueue[snapshot];
 			headerQueue = headerQueue.slice(snapshot + 1);
@@ -107,8 +195,9 @@ export default function (pi: ExtensionAPI) {
 		} else {
 			real = m.responseModel ?? "";
 		}
-		DBG({ ev: "end", model: m.model, responseModel: m.responseModel, queue: [...headerQueue], snapshot, computedReal: real, messageId: m.id });
+		DBG({ ev: "end", model: m.model, responseModel: m.responseModel, queue: [...headerQueue], sseQueue: [...sseModelQueue], snapshot, sseSnapshot, computedReal: real, messageId: m.id });
 		snapshot = -1;
+		sseSnapshot = -1;
 
 		const combo = m.model ?? "";
 		if (GATEWAY_LABELS.has(real)) {
