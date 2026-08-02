@@ -73,6 +73,7 @@ export default function (pi: ExtensionAPI) {
 			model: m.model,
 			responseModel: m.responseModel,
 			partialModel: chunkModel,
+			partialFull: partial,
 			eventType: event.assistantMessageEvent?.type,
 			processed: processedMessages.has(m.id),
 			computedReal: "" // Will be set below
