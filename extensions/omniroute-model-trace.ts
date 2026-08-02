@@ -63,8 +63,7 @@ export default function (pi: ExtensionAPI) {
 		// Already found model for this message? Skip.
 		if (processedMessages.has(m.id)) return;
 
-		const partial = event.assistantMessageEvent?.partial;
-		const chunkModel = partial?.responseModel || partial?.model;
+	const chunkModel = m.responseModel;
 		
 		// Log for debugging
 		DBG({
