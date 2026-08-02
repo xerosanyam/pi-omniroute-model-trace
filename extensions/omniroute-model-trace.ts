@@ -62,8 +62,7 @@ export default function (pi: ExtensionAPI) {
 
 		// Already found model for this message? Skip.
 		if (processedMessages.has(m.id)) return;
-
-	const chunkModel = m.responseModel;
+		const chunkModel = m.responseModel;
 		
 		// Log for debugging
 		DBG({
@@ -72,7 +71,6 @@ export default function (pi: ExtensionAPI) {
 			model: m.model,
 			responseModel: m.responseModel,
 			partialModel: chunkModel,
-			partialFull: partial,
 			eventType: event.assistantMessageEvent?.type,
 			processed: processedMessages.has(m.id),
 			computedReal: "" // Will be set below
